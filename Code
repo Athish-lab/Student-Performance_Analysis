@@ -1,65 +1,303 @@
 
+# ==========================================================
+# STUDENT PERFORMANCE ANALYSIS SYSTEM
+# VIEW SCORE CARD AND PROGRESS REPORT
+# ==========================================================
+
+import os
 import pandas as pd
-from sklearn.model_selection import train_test_split
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_absolute_error, r2_score
+import matplotlib.pyplot as plt
+from google.colab import drive
+from IPython.display import display
 
-url = "/student-mat.csv"
-df = pd.read_csv(url, sep=";")
+# 1. MOUNT GOOGLE DRIVE
+drive.mount('/content/drive')
 
-print("First five rows:")
-print(df.head())
+# 2. LOAD DATASETS
+project_path = "/content/drive/MyDrive/Student Performance Analysis"
+data_path = os.path.join(project_path, "Data")
 
-print("\nDataset shape:", df.shape)
+profiles = pd.read_csv(os.path.join(data_path, "student_profiles.csv"))
+scores = pd.read_csv(os.path.join(data_path, "assessment_scores.csv"))
 
-print("\nMissing values:")
-print(df.isnull().sum().sum())
+scores['percentage'] = (
+    scores['marks_obtained'] / scores['maximum_marks']
+) * 100
 
-X = df[["studytime", "absences", "G1", "G2"]]
-y = df["G3"]
-
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y, test_size=0.2, random_state=42
+scores['assessment_order'] = pd.to_numeric(
+    scores['assessment_order']
 )
 
-print("\nTraining features:", X_train.shape)
-print("Testing features:", X_test.shape)
+assessment_names = (
+    scores[['assessment_order', 'assessment']]
+    .drop_duplicates()
+    .sort_values('assessment_order')
+)
 
-model = LinearRegression()
-model.fit(X_train, y_train)
+assessment_orders = assessment_names['assessment_order'].tolist()
+assessment_labels = assessment_names['assessment'].tolist()
 
-print("\nModel training completed!")
+print("Student Performance System Loaded Successfully!")
 
-y_pred = model.predict(X_test)
 
-print("\nFirst five predicted grades:")
-print(y_pred[:5].round(2))
+# 3. FIND STUDENT AND LATEST SEMESTER
+def get_student(usn):
 
-print("\nFirst five actual grades:")
-print(y_test.head().values)
+    student_profiles = profiles[
+        profiles['USN'].astype(str).str.strip().str.upper() == usn
+    ].copy()
 
-mae = mean_absolute_error(y_test, y_pred)
-r2 = r2_score(y_test, y_pred)
+    if student_profiles.empty:
+        print("\nStudent USN not found in the database.")
+        return None, None
 
-print("\nModel Evaluation:")
-print("Mean Absolute Error:", round(mae, 2))
-print("R-squared score:", round(r2, 2))
+    student_profiles = student_profiles.sort_values(
+        ['academic_year', 'semester']
+    )
 
-def predict_student(studytime, absences, G1, G2):
-    student = pd.DataFrame([{
-        "studytime": studytime,
-        "absences": absences,
-        "G1": G1,
-        "G2": G2
-    }])
+    latest = student_profiles.iloc[-1]
 
-    predicted_grade = model.predict(student)[0]
-    predicted_grade = max(0, min(20, predicted_grade))
+    student_scores = scores[
+        (scores['USN'].astype(str).str.strip().str.upper() == usn) &
+        (scores['academic_year'] == latest['academic_year']) &
+        (scores['semester'] == latest['semester'])
+    ].copy()
 
-    result = "Pass" if predicted_grade >= 10 else "Fail"
+    if student_scores.empty:
+        print("\nNo assessment records found for this student.")
+        return None, None
 
-    print("\nStudent Prediction:")
-    print("Predicted Final Grade:", round(predicted_grade, 2), "/ 20")
-    print("Predicted Result:", result)
+    return latest, student_scores
 
-predict_student(studytime=2, absences=4, G1=12, G2=13)
+
+# 4. VIEW SCORE CARD
+def view_score_card(usn, student, student_scores):
+
+    print("\n" + "=" * 55)
+    print("                 STUDENT SCORE CARD")
+    print("=" * 55)
+
+    print("USN:", usn)
+    print("Academic Year:", student['academic_year'])
+    print("Department:", student['department'])
+    print("Semester:", student['semester'])
+    print("Section:", student['section'])
+    print("Attendance:", student['attendance_percentage'], "%")
+
+    student_scores = student_scores.copy()
+
+    student_scores['score_display'] = student_scores.apply(
+        lambda row: (
+            f"{row['marks_obtained']:g}/"
+            f"{row['maximum_marks']:g} "
+            f"({row['percentage']:.1f}%)"
+        ),
+        axis=1
+    )
+
+    score_card = student_scores.pivot_table(
+        index='subject',
+        columns='assessment',
+        values='score_display',
+        aggfunc='first'
+    )
+
+    score_card = score_card.reindex(columns=assessment_labels)
+
+    subject_average = (
+        student_scores.groupby('subject')['percentage']
+        .mean()
+        .round(2)
+    )
+
+    score_card['Subject Average (%)'] = subject_average
+
+    print("\nASSESSMENT-WISE PERFORMANCE\n")
+    display(score_card)
+
+    overall_average = student_scores['percentage'].mean()
+
+    print("\nOverall Average:", round(overall_average, 2), "%")
+    print("=" * 55)
+
+
+# 5. VIEW PROGRESS REPORT
+def progress_report(usn, student, student_scores):
+
+    print("\n" + "=" * 55)
+    print("                 STUDENT PROGRESS REPORT")
+    print("=" * 55)
+
+    print("USN:", usn)
+    print("Department:", student['department'])
+    print("Semester:", student['semester'])
+
+    subject_average = (
+        student_scores.groupby('subject')['percentage']
+        .mean()
+        .sort_values(ascending=False)
+    )
+
+    assessment_average = (
+        student_scores.groupby('assessment_order')['percentage']
+        .mean()
+        .reindex(assessment_orders)
+    )
+
+    overall_average = student_scores['percentage'].mean()
+
+    # PERFORMANCE GRAPH
+    graph_data = student_scores.pivot_table(
+        index='subject',
+        columns='assessment_order',
+        values='percentage',
+        aggfunc='mean'
+    )
+
+    graph_data = graph_data.reindex(columns=assessment_orders)
+    graph_data.columns = assessment_labels
+
+    plt.figure(figsize=(10, 5))
+
+    for subject_name in graph_data.index:
+        plt.plot(
+            assessment_labels,
+            graph_data.loc[subject_name],
+            marker='o',
+            linewidth=2,
+            label=subject_name
+        )
+
+    plt.title("Student Performance Across All Assessments")
+    plt.xlabel("Assessments")
+    plt.ylabel("Percentage (%)")
+    plt.ylim(0, 105)
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.show()
+
+    # STUDENT STRENGTHS
+    print("\nSTUDENT STRENGTHS")
+
+    top_subjects = subject_average.head(2)
+
+    for subject_name, average in top_subjects.items():
+        print(f"- {subject_name}: {average:.2f}%")
+
+    top_assessment_order = assessment_average.idxmax()
+
+    top_assessment = assessment_names.loc[
+        assessment_names['assessment_order'] == top_assessment_order,
+        'assessment'
+    ].iloc[0]
+
+    print(
+        f"- Best assessment: {top_assessment} "
+        f"({assessment_average.max():.2f}%)"
+    )
+
+    # AREAS NEEDING IMPROVEMENT
+    print("\nAREAS NEEDING IMPROVEMENT")
+
+    weak_subjects = subject_average[
+        subject_average < overall_average
+    ]
+
+    if weak_subjects.empty:
+        print("- All subjects are performing at or above the overall average.")
+    else:
+        for subject_name, average in weak_subjects.items():
+            print(f"- {subject_name}: {average:.2f}%")
+
+    weak_assessment_order = assessment_average.idxmin()
+
+    weak_assessment = assessment_names.loc[
+        assessment_names['assessment_order'] == weak_assessment_order,
+        'assessment'
+    ].iloc[0]
+
+    print(
+        f"- Lowest assessment average: {weak_assessment} "
+        f"({assessment_average.min():.2f}%)"
+    )
+
+    # IMPROVEMENT SUGGESTIONS
+    print("\nPERSONALISED IMPROVEMENT SUGGESTIONS")
+
+    lowest_subject = subject_average.idxmin()
+
+    print(f"\n1. Focus more on {lowest_subject}.")
+    print(f"   Current average: {subject_average.min():.2f}%")
+    print("   Revise difficult topics, practise questions regularly and clear doubts.")
+
+    print(f"\n2. Pay attention to {weak_assessment}.")
+
+    if weak_assessment == "Midterm Examination":
+        print("   Revise multiple units together and practise timed, mixed-topic questions.")
+
+    elif weak_assessment == "Final Examination":
+        print("   Start final exam preparation earlier, solve previous papers and practise full-length answers.")
+
+    else:
+        print("   Revise topics regularly and practise questions before each unit test.")
+
+    print("\n3. Maintain regular attendance and follow a consistent study schedule.")
+
+    # OVERALL PERFORMANCE TREND
+    print("\nOVERALL PERFORMANCE TREND")
+
+    first_average = assessment_average.iloc[0]
+    last_average = assessment_average.iloc[-1]
+
+    print("Overall Average:", round(overall_average, 2), "%")
+
+    if last_average > first_average:
+        print("Performance has improved from the first assessment to the final assessment.")
+
+    elif last_average < first_average:
+        print("Performance has declined from the first assessment to the final assessment.")
+
+    else:
+        print("Performance has remained at a similar level.")
+
+    print("\n" + "=" * 55)
+
+
+# 6. MAIN PROGRAM
+while True:
+
+    print("\n" + "=" * 55)
+    print("          STUDENT PERFORMANCE ANALYSIS")
+    print("=" * 55)
+
+    usn = input("\nEnter Student USN (or type exit): ").strip().upper()
+
+    if usn == "EXIT":
+        print("\nProgram Closed.")
+        break
+
+    if not usn:
+        print("Please enter a valid USN.")
+        continue
+
+    student, student_scores = get_student(usn)
+
+    if student is None:
+        continue
+
+    print("\nStudent Found Successfully!")
+
+    print("\n1. View Score Card")
+    print("2. View Progress Report")
+
+    choice = input("\nEnter your choice (1 or 2): ").strip()
+
+    if choice == '1':
+        view_score_card(usn, student, student_scores)
+
+    elif choice == '2':
+        progress_report(usn, student, student_scores)
+
+    else:
+        print("\nInvalid choice. Please select 1 or 2.")
